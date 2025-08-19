@@ -12,11 +12,29 @@ using MagicLinkDemo.Models;
 using MagicLinkDemo.Services;
 using DotNetEnv;
 
-// Load environment variables from .env file
-Env.Load();
+// Load environment variables from .env file only in development
+// Railway provides environment variables directly, so this is optional
+if (File.Exists(".env"))
+{
+    try
+    {
+        Env.Load();
+        Console.WriteLine("✅ .env file loaded successfully");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"⚠️ Could not load .env file: {ex.Message}");
+    }
+}
+else
+{
+    Console.WriteLine("ℹ️ No .env file found (normal for Railway deployment)");
+}
 
-// For AWS deployment - ensure the app listens on port 8080
-Environment.SetEnvironmentVariable("ASPNETCORE_URLS", "http://+:8080");
+// For Railway deployment - use PORT environment variable if available, otherwise default to 8080
+var port = Environment.GetEnvironmentVariable("PORT") ?? "8080";
+Environment.SetEnvironmentVariable("ASPNETCORE_URLS", $"http://+:{port}");
+Console.WriteLine($"🚀 Application will listen on port {port}");
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -26,7 +44,8 @@ builder.Services.AddSwaggerGen();
 
 // Configure caching - Railway Redis connection  
 var redisConnectionString = Environment.GetEnvironmentVariable("REDIS_CONNECTION_STRING") 
-    ?? Environment.GetEnvironmentVariable("REDIS_URL"); // Railway uses REDIS_URL
+    ?? Environment.GetEnvironmentVariable("REDIS_URL") // Railway uses REDIS_URL
+    ?? Environment.GetEnvironmentVariable("REDIS_PRIVATE_URL"); // Alternative Railway Redis variable
 
 // Always register memory cache (for rate limiting and fallback)
 builder.Services.AddMemoryCache();
@@ -41,7 +60,7 @@ if (!string.IsNullOrEmpty(redisConnectionString))
             options.Configuration = redisConnectionString;
             options.InstanceName = "MagicLinkDemo";
         });
-        Console.WriteLine($"✅ Redis configured: {redisConnectionString}");
+        Console.WriteLine($"✅ Redis configured successfully");
     }
     catch (Exception ex)
     {
@@ -63,14 +82,20 @@ builder.Services.AddScoped<IAmazonSimpleEmailServiceV2>(provider =>
     var awsSecretKey = Environment.GetEnvironmentVariable("AWS_SECRET_ACCESS_KEY");
     var awsRegion = Environment.GetEnvironmentVariable("AWS_DEFAULT_REGION") ?? "us-east-1";
     
+    Console.WriteLine($"🔍 Checking AWS credentials...");
+    Console.WriteLine($"AWS_ACCESS_KEY_ID: {(string.IsNullOrEmpty(awsAccessKey) ? "❌ NOT SET" : "✅ SET")}");
+    Console.WriteLine($"AWS_SECRET_ACCESS_KEY: {(string.IsNullOrEmpty(awsSecretKey) ? "❌ NOT SET" : "✅ SET")}");
+    Console.WriteLine($"AWS_DEFAULT_REGION: {awsRegion}");
+    
     if (string.IsNullOrEmpty(awsAccessKey) || string.IsNullOrEmpty(awsSecretKey))
     {
-        throw new InvalidOperationException("AWS credentials not found. Please check your .env file.");
+        throw new InvalidOperationException("AWS credentials not found. Please set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables in Railway.");
     }
     
     var credentials = new Amazon.Runtime.BasicAWSCredentials(awsAccessKey, awsSecretKey);
     var region = Amazon.RegionEndpoint.GetBySystemName(awsRegion);
     
+    Console.WriteLine($"✅ AWS SES client configured for region: {awsRegion}");
     return new AmazonSimpleEmailServiceV2Client(credentials, region);
 });
 
@@ -97,6 +122,11 @@ builder.Services.AddAuthorization();
 
 var app = builder.Build();
 
+// Log environment information
+Console.WriteLine($"🌍 Environment: {app.Environment.EnvironmentName}");
+Console.WriteLine($"📧 SES_FROM_ADDRESS: {(string.IsNullOrEmpty(Environment.GetEnvironmentVariable("SES_FROM_ADDRESS")) ? "❌ NOT SET" : "✅ SET")}");
+Console.WriteLine($"🔐 MAGICLINK_SECRET: {(string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MAGICLINK_SECRET")) ? "❌ NOT SET" : "✅ SET")}");
+
 // Configure the HTTP request pipeline
 if (app.Environment.IsDevelopment())
 {
@@ -111,12 +141,27 @@ app.UseStaticFiles();
 app.UseAuthentication();
 app.UseAuthorization();
 
-// Health check endpoint
-app.MapGet("/health", () => Results.Ok(new { 
-    status = "healthy", 
-    timestamp = DateTime.UtcNow,
-    environment = app.Environment.EnvironmentName
-}));
+// Health check endpoint with environment variables status
+app.MapGet("/health", () => {
+    var envStatus = new {
+        AWS_ACCESS_KEY_ID = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("AWS_ACCESS_KEY_ID")),
+        AWS_SECRET_ACCESS_KEY = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("AWS_SECRET_ACCESS_KEY")),
+        AWS_DEFAULT_REGION = Environment.GetEnvironmentVariable("AWS_DEFAULT_REGION") ?? "us-east-1",
+        SES_FROM_ADDRESS = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("SES_FROM_ADDRESS")),
+        MAGICLINK_SECRET = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MAGICLINK_SECRET")),
+        REDIS_CONFIGURED = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("REDIS_CONNECTION_STRING")) || 
+                          !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("REDIS_URL")) ||
+                          !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("REDIS_PRIVATE_URL"))
+    };
+    
+    return Results.Ok(new { 
+        status = "healthy", 
+        timestamp = DateTime.UtcNow,
+        environment = app.Environment.EnvironmentName,
+        port = port,
+        environmentVariables = envStatus
+    });
+});
 
 // POST /auth/magic-link endpoint
 app.MapPost("/auth/magic-link", async ([FromBody] MagicLinkRequest request,
