@@ -18,7 +18,7 @@ public class EmailSender
 
     public async Task SendMagicLinkAsync(string toEmail, string magicLink)
     {
-        var subject = "Your Magic Link - MagicLinkDemo";
+        var subject = "Your Secure Login Link - YourAppName";
         var htmlBody = $@"
 <!DOCTYPE html>
 <html>
