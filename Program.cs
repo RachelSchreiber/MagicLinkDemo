@@ -50,6 +50,15 @@ var redisConnectionString = builder.Configuration["REDIS_CONNECTION_STRING"]
     ?? Environment.GetEnvironmentVariable("REDIS_URL")
     ?? Environment.GetEnvironmentVariable("REDIS_PRIVATE_URL");
 
+// Fix Railway Redis URL duplicate port issue (e.g., :6379:6379 -> :6379)
+if (!string.IsNullOrEmpty(redisConnectionString) && redisConnectionString.Contains(":6379:6379"))
+{
+    redisConnectionString = redisConnectionString.Replace(":6379:6379", ":6379");
+    Console.WriteLine($"🔧 Fixed duplicate port in Redis URL");
+}
+
+Console.WriteLine($"🔍 Redis Connection String: {(string.IsNullOrEmpty(redisConnectionString) ? "❌ NOT SET" : "✅ SET")}");
+
 // Always register memory cache (for rate limiting and fallback)
 builder.Services.AddMemoryCache();
 
@@ -57,13 +66,13 @@ if (!string.IsNullOrEmpty(redisConnectionString))
 {
     try
     {
-        // Railway/Redis connection
+        // Railway/Redis connection with timeout settings
         builder.Services.AddStackExchangeRedisCache(options =>
         {
             options.Configuration = redisConnectionString;
             options.InstanceName = "MagicLinkDemo";
         });
-        Console.WriteLine($"✅ Redis configured successfully");
+        Console.WriteLine($"✅ Redis configured successfully with URL: {redisConnectionString}");
     }
     catch (Exception ex)
     {
