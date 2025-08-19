@@ -43,9 +43,12 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
 // Configure caching - Railway Redis connection  
-var redisConnectionString = Environment.GetEnvironmentVariable("REDIS_CONNECTION_STRING") 
-    ?? Environment.GetEnvironmentVariable("REDIS_URL") // Railway uses REDIS_URL
-    ?? Environment.GetEnvironmentVariable("REDIS_PRIVATE_URL"); // Alternative Railway Redis variable
+var redisConnectionString = builder.Configuration["REDIS_CONNECTION_STRING"] 
+    ?? builder.Configuration["REDIS_URL"] // Railway uses REDIS_URL
+    ?? builder.Configuration["REDIS_PRIVATE_URL"] // Alternative Railway Redis variable
+    ?? Environment.GetEnvironmentVariable("REDIS_CONNECTION_STRING") 
+    ?? Environment.GetEnvironmentVariable("REDIS_URL")
+    ?? Environment.GetEnvironmentVariable("REDIS_PRIVATE_URL");
 
 // Always register memory cache (for rate limiting and fallback)
 builder.Services.AddMemoryCache();
@@ -78,9 +81,10 @@ builder.Services.AddScoped<IAmazonSimpleEmailServiceV2>(provider =>
 {
     var configuration = provider.GetRequiredService<IConfiguration>();
     
-    var awsAccessKey = Environment.GetEnvironmentVariable("AWS_ACCESS_KEY_ID");
-    var awsSecretKey = Environment.GetEnvironmentVariable("AWS_SECRET_ACCESS_KEY");
-    var awsRegion = Environment.GetEnvironmentVariable("AWS_DEFAULT_REGION") ?? "us-east-1";
+    // Try IConfiguration first (Railway), then Environment variables (local)
+    var awsAccessKey = configuration["AWS_ACCESS_KEY_ID"] ?? Environment.GetEnvironmentVariable("AWS_ACCESS_KEY_ID");
+    var awsSecretKey = configuration["AWS_SECRET_ACCESS_KEY"] ?? Environment.GetEnvironmentVariable("AWS_SECRET_ACCESS_KEY");
+    var awsRegion = configuration["AWS_DEFAULT_REGION"] ?? Environment.GetEnvironmentVariable("AWS_DEFAULT_REGION") ?? "us-east-1";
     
     Console.WriteLine($"🔍 Checking AWS credentials...");
     Console.WriteLine($"AWS_ACCESS_KEY_ID: {(string.IsNullOrEmpty(awsAccessKey) ? "❌ NOT SET" : "✅ SET")}");
@@ -124,8 +128,8 @@ var app = builder.Build();
 
 // Log environment information
 Console.WriteLine($"🌍 Environment: {app.Environment.EnvironmentName}");
-Console.WriteLine($"📧 SES_FROM_ADDRESS: {(string.IsNullOrEmpty(Environment.GetEnvironmentVariable("SES_FROM_ADDRESS")) ? "❌ NOT SET" : "✅ SET")}");
-Console.WriteLine($"🔐 MAGICLINK_SECRET: {(string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MAGICLINK_SECRET")) ? "❌ NOT SET" : "✅ SET")}");
+Console.WriteLine($"📧 SES_FROM_ADDRESS: {(string.IsNullOrEmpty(builder.Configuration["SES_FROM_ADDRESS"] ?? Environment.GetEnvironmentVariable("SES_FROM_ADDRESS")) ? "❌ NOT SET" : "✅ SET")}");
+Console.WriteLine($"🔐 MAGICLINK_SECRET: {(string.IsNullOrEmpty(builder.Configuration["MAGICLINK_SECRET"] ?? Environment.GetEnvironmentVariable("MAGICLINK_SECRET")) ? "❌ NOT SET" : "✅ SET")}");
 
 // Configure the HTTP request pipeline
 if (app.Environment.IsDevelopment())
@@ -142,16 +146,16 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 // Health check endpoint with environment variables status
-app.MapGet("/health", () => {
+app.MapGet("/health", (IConfiguration config) => {
     var envStatus = new {
-        AWS_ACCESS_KEY_ID = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("AWS_ACCESS_KEY_ID")),
-        AWS_SECRET_ACCESS_KEY = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("AWS_SECRET_ACCESS_KEY")),
-        AWS_DEFAULT_REGION = Environment.GetEnvironmentVariable("AWS_DEFAULT_REGION") ?? "us-east-1",
-        SES_FROM_ADDRESS = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("SES_FROM_ADDRESS")),
-        MAGICLINK_SECRET = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MAGICLINK_SECRET")),
-        REDIS_CONFIGURED = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("REDIS_CONNECTION_STRING")) || 
-                          !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("REDIS_URL")) ||
-                          !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("REDIS_PRIVATE_URL"))
+        AWS_ACCESS_KEY_ID = !string.IsNullOrEmpty(config["AWS_ACCESS_KEY_ID"] ?? Environment.GetEnvironmentVariable("AWS_ACCESS_KEY_ID")),
+        AWS_SECRET_ACCESS_KEY = !string.IsNullOrEmpty(config["AWS_SECRET_ACCESS_KEY"] ?? Environment.GetEnvironmentVariable("AWS_SECRET_ACCESS_KEY")),
+        AWS_DEFAULT_REGION = config["AWS_DEFAULT_REGION"] ?? Environment.GetEnvironmentVariable("AWS_DEFAULT_REGION") ?? "us-east-1",
+        SES_FROM_ADDRESS = !string.IsNullOrEmpty(config["SES_FROM_ADDRESS"] ?? Environment.GetEnvironmentVariable("SES_FROM_ADDRESS")),
+        MAGICLINK_SECRET = !string.IsNullOrEmpty(config["MAGICLINK_SECRET"] ?? Environment.GetEnvironmentVariable("MAGICLINK_SECRET")),
+        REDIS_CONFIGURED = !string.IsNullOrEmpty(config["REDIS_CONNECTION_STRING"] ?? config["REDIS_URL"] ?? config["REDIS_PRIVATE_URL"] ??
+                          Environment.GetEnvironmentVariable("REDIS_CONNECTION_STRING") ?? Environment.GetEnvironmentVariable("REDIS_URL") ??
+                          Environment.GetEnvironmentVariable("REDIS_PRIVATE_URL"))
     };
     
     return Results.Ok(new { 
