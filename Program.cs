@@ -13,29 +13,15 @@ using MagicLinkDemo.Services;
 using DotNetEnv;
 using StackExchange.Redis;
 
-// Load environment variables from .env file only in development
-// Railway provides environment variables directly, so this is optional
+// Load environment variables from .env file in development
 if (File.Exists(".env"))
 {
-    try
-    {
-        Env.Load();
-        Console.WriteLine("✅ .env file loaded successfully");
-    }
-    catch (Exception ex)
-    {
-        Console.WriteLine($"⚠️ Could not load .env file: {ex.Message}");
-    }
-}
-else
-{
-    Console.WriteLine("ℹ️ No .env file found (normal for Railway deployment)");
+    Env.Load();
 }
 
-// For Railway deployment - use PORT environment variable if available, otherwise default to 8080
+// Configure port for Railway deployment
 var port = Environment.GetEnvironmentVariable("PORT") ?? "8080";
 Environment.SetEnvironmentVariable("ASPNETCORE_URLS", $"http://+:{port}");
-Console.WriteLine($"🚀 Application will listen on port {port}");
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -43,41 +29,23 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
-// Configure Redis connection string
+// Configure Redis connection
 var redisConnectionString = builder.Configuration["REDIS_CONNECTION_STRING"] 
-    ?? builder.Configuration["REDIS_URL"] // Railway uses REDIS_URL
-    ?? builder.Configuration["REDIS_PRIVATE_URL"] // Alternative Railway Redis variable
+    ?? builder.Configuration["REDIS_URL"]
+    ?? builder.Configuration["REDIS_PRIVATE_URL"]
     ?? Environment.GetEnvironmentVariable("REDIS_CONNECTION_STRING") 
     ?? Environment.GetEnvironmentVariable("REDIS_URL")
     ?? Environment.GetEnvironmentVariable("REDIS_PRIVATE_URL");
 
-// Fix Railway Redis URL formatting issues
+// Fix duplicate ports in Redis URL if present
 if (!string.IsNullOrEmpty(redisConnectionString))
 {
-    Console.WriteLine($"🔍 Original Redis URL: {redisConnectionString.Substring(0, Math.Min(50, redisConnectionString.Length))}...");
-    
-    // Fix duplicate ports by replacing any :6379: pattern followed by digits
-    var originalUrl = redisConnectionString;
-    
-    // Method 1: Replace specific patterns
-    redisConnectionString = redisConnectionString.Replace(":6379:6379", ":6379");
-    redisConnectionString = redisConnectionString.Replace(":6379:6380", ":6379");
-    
-    // Method 2: Use regex for any :6379:XXXX pattern
     redisConnectionString = System.Text.RegularExpressions.Regex.Replace(
         redisConnectionString, 
         @":6379:\d+", 
         ":6379"
     );
-    
-    if (originalUrl != redisConnectionString)
-    {
-        Console.WriteLine($"🔧 Fixed duplicate port in Redis URL");
-        Console.WriteLine($"🔍 Fixed Redis URL: {redisConnectionString.Substring(0, Math.Min(50, redisConnectionString.Length))}...");
-    }
 }
-
-Console.WriteLine($"🔍 Redis Connection String: {(string.IsNullOrEmpty(redisConnectionString) ? "❌ NOT SET" : "✅ SET")}");
 
 // Always register memory cache (for rate limiting and fallback)
 builder.Services.AddMemoryCache();
@@ -88,88 +56,48 @@ if (!string.IsNullOrEmpty(redisConnectionString))
     {
         try
         {
-            Console.WriteLine($"🔍 Using Redis URL: {redisConnectionString.Substring(0, Math.Min(60, redisConnectionString.Length))}...");
-
-            // Try simple connection first
             var simpleConfig = $"redis.railway.internal:6379,password=jiJceFvaWIjdTAepEepOTppPdLOEEsCo,abortConnect=false,connectTimeout=20000,syncTimeout=15000";
-            Console.WriteLine($"🔧 Trying simple connection format...");
-
             var configuration = ConfigurationOptions.Parse(simpleConfig);
             
-            Console.WriteLine($"🔧 Parsed Redis endpoint: {configuration.EndPoints.FirstOrDefault()}");
-            
-            // Simplified Railway configurations
             configuration.AbortOnConnectFail = false;
-            configuration.ConnectTimeout = 20000; // 20 seconds
-            configuration.SyncTimeout = 15000; // 15 seconds
+            configuration.ConnectTimeout = 20000;
+            configuration.SyncTimeout = 15000;
             configuration.CommandMap = CommandMap.Create(new HashSet<string> 
             { 
                 "INFO", "CONFIG", "CLUSTER", "PING", "ECHO", "CLIENT" 
             }, available: false);
             
             var multiplexer = ConnectionMultiplexer.Connect(configuration);
-            Console.WriteLine($"✅ Redis ConnectionMultiplexer configured successfully");
-            
-            // Test the connection with proper async handling
-            Task.Run(async () =>
-            {
-                try
-                {
-                    var db = multiplexer.GetDatabase();
-                    var pingResult = await db.PingAsync();
-                    Console.WriteLine($"✅ Redis ping test successful: {pingResult.TotalMilliseconds}ms");
-                }
-                catch (Exception pingEx)
-                {
-                    Console.WriteLine($"⚠️ Redis ping failed: {pingEx.Message}");
-                }
-            });
-            
             return multiplexer;
         }
-        catch (Exception ex)
+        catch
         {
-            Console.WriteLine($"⚠️ Redis ConnectionMultiplexer failed to initialize: {ex.Message}");
-            // Return null to indicate Redis is not available
             return null;
         }
     });
 }
-
 else
 {
-    // Register a null ConnectionMultiplexer to indicate Redis is not available
-    builder.Services.AddSingleton<IConnectionMultiplexer>(provider =>
-    {
-        Console.WriteLine("⚠️ Redis not configured, using memory cache only");
-        return null;
-    });
+    builder.Services.AddSingleton<IConnectionMultiplexer>(provider => null);
 }
 
-// Configure AWS SES client with credentials and region
+// Configure AWS SES client
 builder.Services.AddScoped<IAmazonSimpleEmailServiceV2>(provider =>
 {
     var configuration = provider.GetRequiredService<IConfiguration>();
     
-    // Try IConfiguration first (Railway), then Environment variables (local)
     var awsAccessKey = configuration["AWS_ACCESS_KEY_ID"] ?? Environment.GetEnvironmentVariable("AWS_ACCESS_KEY_ID");
     var awsSecretKey = configuration["AWS_SECRET_ACCESS_KEY"] ?? Environment.GetEnvironmentVariable("AWS_SECRET_ACCESS_KEY");
     var awsRegion = configuration["AWS_DEFAULT_REGION"] ?? Environment.GetEnvironmentVariable("AWS_DEFAULT_REGION") ?? "us-east-1";
     
-    Console.WriteLine($"🔍 Checking AWS credentials...");
-    Console.WriteLine($"AWS_ACCESS_KEY_ID: {(string.IsNullOrEmpty(awsAccessKey) ? "❌ NOT SET" : "✅ SET")}");
-    Console.WriteLine($"AWS_SECRET_ACCESS_KEY: {(string.IsNullOrEmpty(awsSecretKey) ? "❌ NOT SET" : "✅ SET")}");
-    Console.WriteLine($"AWS_DEFAULT_REGION: {awsRegion}");
-    
     if (string.IsNullOrEmpty(awsAccessKey) || string.IsNullOrEmpty(awsSecretKey))
     {
-        throw new InvalidOperationException("AWS credentials not found. Please set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables in Railway.");
+        throw new InvalidOperationException("AWS credentials not found. Please set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables.");
     }
     
     var credentials = new Amazon.Runtime.BasicAWSCredentials(awsAccessKey, awsSecretKey);
     var region = Amazon.RegionEndpoint.GetBySystemName(awsRegion);
     
-    Console.WriteLine($"✅ AWS SES client configured for region: {awsRegion}");
     return new AmazonSimpleEmailServiceV2Client(credentials, region);
 });
 
@@ -196,11 +124,6 @@ builder.Services.AddAuthorization();
 
 var app = builder.Build();
 
-// Log environment information
-Console.WriteLine($"🌍 Environment: {app.Environment.EnvironmentName}");
-Console.WriteLine($"📧 SES_FROM_ADDRESS: {(string.IsNullOrEmpty(builder.Configuration["SES_FROM_ADDRESS"] ?? Environment.GetEnvironmentVariable("SES_FROM_ADDRESS")) ? "❌ NOT SET" : "✅ SET")}");
-Console.WriteLine($"🔐 MAGICLINK_SECRET: {(string.IsNullOrEmpty(builder.Configuration["MAGICLINK_SECRET"] ?? Environment.GetEnvironmentVariable("MAGICLINK_SECRET")) ? "❌ NOT SET" : "✅ SET")}");
-
 // Configure the HTTP request pipeline
 if (app.Environment.IsDevelopment())
 {
@@ -215,27 +138,11 @@ app.UseStaticFiles();
 app.UseAuthentication();
 app.UseAuthorization();
 
-// Health check endpoint with environment variables status
-app.MapGet("/health", (IConfiguration config) => {
-    var envStatus = new {
-        AWS_ACCESS_KEY_ID = !string.IsNullOrEmpty(config["AWS_ACCESS_KEY_ID"] ?? Environment.GetEnvironmentVariable("AWS_ACCESS_KEY_ID")),
-        AWS_SECRET_ACCESS_KEY = !string.IsNullOrEmpty(config["AWS_SECRET_ACCESS_KEY"] ?? Environment.GetEnvironmentVariable("AWS_SECRET_ACCESS_KEY")),
-        AWS_DEFAULT_REGION = config["AWS_DEFAULT_REGION"] ?? Environment.GetEnvironmentVariable("AWS_DEFAULT_REGION") ?? "us-east-1",
-        SES_FROM_ADDRESS = !string.IsNullOrEmpty(config["SES_FROM_ADDRESS"] ?? Environment.GetEnvironmentVariable("SES_FROM_ADDRESS")),
-        MAGICLINK_SECRET = !string.IsNullOrEmpty(config["MAGICLINK_SECRET"] ?? Environment.GetEnvironmentVariable("MAGICLINK_SECRET")),
-        REDIS_CONFIGURED = !string.IsNullOrEmpty(config["REDIS_CONNECTION_STRING"] ?? config["REDIS_URL"] ?? config["REDIS_PRIVATE_URL"] ??
-                          Environment.GetEnvironmentVariable("REDIS_CONNECTION_STRING") ?? Environment.GetEnvironmentVariable("REDIS_URL") ??
-                          Environment.GetEnvironmentVariable("REDIS_PRIVATE_URL"))
-    };
-    
-    return Results.Ok(new { 
-        status = "healthy", 
-        timestamp = DateTime.UtcNow,
-        environment = app.Environment.EnvironmentName,
-        port = port,
-        environmentVariables = envStatus
-    });
-});
+// Health check endpoint
+app.MapGet("/health", () => Results.Ok(new { 
+    status = "healthy", 
+    timestamp = DateTime.UtcNow
+}));
 
 // POST /auth/magic-link endpoint
 app.MapPost("/auth/magic-link", async ([FromBody] MagicLinkRequest request,
@@ -283,13 +190,11 @@ app.MapPost("/auth/magic-link", async ([FromBody] MagicLinkRequest request,
         cache.Set(rateLimitKeyIp, true, TimeSpan.FromSeconds(60));
         cache.Set(rateLimitKeyEmail, true, TimeSpan.FromSeconds(60));
 
-        logger.LogInformation("Magic link sent to {Email} from IP {ClientIP}", request.Email, clientIp);
-
         return Results.Ok(new { message = "Magic link sent successfully" });
     }
     catch (Exception ex)
     {
-        logger.LogError(ex, "Failed to send magic link to {Email}", request.Email);
+        logger.LogError(ex, "Failed to send magic link");
         return Results.Problem("Failed to send magic link. Please try again later.");
     }
 });
@@ -302,17 +207,15 @@ app.MapGet("/auth/callback", async ([FromQuery] string? token,
 {
     if (string.IsNullOrWhiteSpace(token))
     {
-        logger.LogWarning("Callback accessed without token");
         return Results.Redirect("/error.html");
     }
 
     try
     {
-        // Validate simple token and get email
+        // Validate token and get email
         var email = await tokenService.ValidateTokenAsync(token);
         if (string.IsNullOrEmpty(email))
         {
-            logger.LogWarning("Invalid token used in callback");
             return Results.Redirect("/error.html");
         }
 
@@ -329,8 +232,6 @@ app.MapGet("/auth/callback", async ([FromQuery] string? token,
 
         // Sign in user with cookie authentication
         await context.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, principal);
-
-        logger.LogInformation("User {Email} successfully authenticated via magic link", email);
 
         return Results.Redirect("/success.html");
     }
@@ -353,13 +254,6 @@ app.MapGet("/api/me", [Authorize] (ClaimsPrincipal user) =>
         authenticated = true,
         loginTime = loginTime
     });
-});
-
-// Optional: Logout endpoint
-app.MapPost("/auth/logout", [Authorize] async (HttpContext context) =>
-{
-    await context.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
-    return Results.Ok(new { message = "Logged out successfully" });
 });
 
 // Fallback to index.html for root path
