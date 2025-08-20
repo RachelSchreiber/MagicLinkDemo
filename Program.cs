@@ -54,16 +54,26 @@ var redisConnectionString = builder.Configuration["REDIS_CONNECTION_STRING"]
 // Fix Railway Redis URL formatting issues
 if (!string.IsNullOrEmpty(redisConnectionString))
 {
-    // Fix duplicate ports like :6379:6380 or :6379:6379
-    if (redisConnectionString.Contains(":6379:"))
+    Console.WriteLine($"🔍 Original Redis URL: {redisConnectionString.Substring(0, Math.Min(50, redisConnectionString.Length))}...");
+    
+    // Fix duplicate ports by replacing any :6379: pattern followed by digits
+    var originalUrl = redisConnectionString;
+    
+    // Method 1: Replace specific patterns
+    redisConnectionString = redisConnectionString.Replace(":6379:6379", ":6379");
+    redisConnectionString = redisConnectionString.Replace(":6379:6380", ":6379");
+    
+    // Method 2: Use regex for any :6379:XXXX pattern
+    redisConnectionString = System.Text.RegularExpressions.Regex.Replace(
+        redisConnectionString, 
+        @":6379:\d+", 
+        ":6379"
+    );
+    
+    if (originalUrl != redisConnectionString)
     {
-        var parts = redisConnectionString.Split(':');
-        if (parts.Length >= 4 && parts[parts.Length - 2] == "6379")
-        {
-            // Remove the duplicate port
-            redisConnectionString = string.Join(":", parts.Take(parts.Length - 1));
-            Console.WriteLine($"🔧 Fixed duplicate port in Redis URL");
-        }
+        Console.WriteLine($"🔧 Fixed duplicate port in Redis URL");
+        Console.WriteLine($"🔍 Fixed Redis URL: {redisConnectionString.Substring(0, Math.Min(50, redisConnectionString.Length))}...");
     }
 }
 
@@ -78,22 +88,24 @@ if (!string.IsNullOrEmpty(redisConnectionString))
     {
         try
         {
-            Console.WriteLine($"🔍 Redis URL format: {redisConnectionString.Substring(0, Math.Min(50, redisConnectionString.Length))}...");
+            Console.WriteLine($"🔍 Using Redis URL: {redisConnectionString.Substring(0, Math.Min(60, redisConnectionString.Length))}...");
 
-            var configuration = ConfigurationOptions.Parse(redisConnectionString);
+            // Try simple connection first
+            var simpleConfig = $"redis.railway.internal:6379,password=jiJceFvaWIjdTAepEepOTppPdLOEEsCo,abortConnect=false,connectTimeout=20000,syncTimeout=15000";
+            Console.WriteLine($"🔧 Trying simple connection format...");
+
+            var configuration = ConfigurationOptions.Parse(simpleConfig);
             
-            // Railway specific configurations for better connection handling
-            configuration.AbortOnConnectFail = false; // Don't abort on connection failure
-            configuration.ConnectTimeout = 15000; // 15 seconds - Railway can be slow
-            configuration.SyncTimeout = 10000; // 10 seconds
-            configuration.AsyncTimeout = 10000; // 10 seconds
-            configuration.ConnectRetry = 3; // Retry 3 times
-            configuration.KeepAlive = 60; // Keep connection alive
-            configuration.ReconnectRetryPolicy = new ExponentialRetry(1000); // Exponential backoff
+            Console.WriteLine($"🔧 Parsed Redis endpoint: {configuration.EndPoints.FirstOrDefault()}");
             
-            // For Railway internal networking - SSL is typically disabled for internal connections
-            configuration.Ssl = false; // Railway internal connections usually don't need SSL
-            configuration.AllowAdmin = false; // Security best practice
+            // Simplified Railway configurations
+            configuration.AbortOnConnectFail = false;
+            configuration.ConnectTimeout = 20000; // 20 seconds
+            configuration.SyncTimeout = 15000; // 15 seconds
+            configuration.CommandMap = CommandMap.Create(new HashSet<string> 
+            { 
+                "INFO", "CONFIG", "CLUSTER", "PING", "ECHO", "CLIENT" 
+            }, available: false);
             
             var multiplexer = ConnectionMultiplexer.Connect(configuration);
             Console.WriteLine($"✅ Redis ConnectionMultiplexer configured successfully");
