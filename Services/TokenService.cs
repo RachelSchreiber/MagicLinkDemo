@@ -30,13 +30,26 @@ public class TokenService
         {
             try
             {
-                // Store in Redis for 15 minutes
+                // Store in Redis for 15 minutes with retry logic
                 var options = new DistributedCacheEntryOptions
                 {
                     AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(15)
                 };
-                await _distributedCache.SetStringAsync(key, email, options);
+                
+                // Try with shorter timeout first
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                await _distributedCache.SetStringAsync(key, email, options, cts.Token);
                 Console.WriteLine($"✅ Token stored in Redis: {key}");
+            }
+            catch (OperationCanceledException)
+            {
+                Console.WriteLine($"⚠️ Redis timeout after 3 seconds, falling back to memory cache");
+                // Fallback to memory cache
+                if (_memoryCache != null)
+                {
+                    _memoryCache.Set(key, email, TimeSpan.FromMinutes(15));
+                    Console.WriteLine($"💾 Token stored in memory cache: {key}");
+                }
             }
             catch (Exception ex)
             {
@@ -66,14 +79,26 @@ public class TokenService
         {
             try
             {
-                // Get from Redis
-                var email = await _distributedCache.GetStringAsync(key);
+                // Get from Redis with timeout
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                var email = await _distributedCache.GetStringAsync(key, cts.Token);
                 if (email != null)
                 {
                     // Remove token after use (one-time use)
-                    await _distributedCache.RemoveAsync(key);
+                    await _distributedCache.RemoveAsync(key, cts.Token);
                     Console.WriteLine($"✅ Token validated from Redis: {key}");
                     return email;
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                Console.WriteLine($"⚠️ Redis validation timeout after 3 seconds, trying memory cache");
+                // Fallback to memory cache
+                if (_memoryCache != null && _memoryCache.TryGetValue(key, out var fallbackEmail))
+                {
+                    _memoryCache.Remove(key);
+                    Console.WriteLine($"💾 Token validated from memory cache: {key}");
+                    return fallbackEmail?.ToString();
                 }
             }
             catch (Exception ex)
