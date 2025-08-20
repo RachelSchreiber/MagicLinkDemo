@@ -34,9 +34,8 @@ else
 
 // For Railway deployment - use PORT environment variable if available, otherwise default to 8080
 var port = Environment.GetEnvironmentVariable("PORT") ?? "8080";
-var urls = $"http://0.0.0.0:{port}";
-Environment.SetEnvironmentVariable("ASPNETCORE_URLS", urls);
-Console.WriteLine($"🚀 Application will listen on {urls}");
+Environment.SetEnvironmentVariable("ASPNETCORE_URLS", $"http://+:{port}");
+Console.WriteLine($"🚀 Application will listen on port {port}");
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -44,7 +43,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
-// Configure caching - Railway Redis connection  
+// Configure Redis connection string
 var redisConnectionString = builder.Configuration["REDIS_CONNECTION_STRING"] 
     ?? builder.Configuration["REDIS_URL"] // Railway uses REDIS_URL
     ?? builder.Configuration["REDIS_PRIVATE_URL"] // Alternative Railway Redis variable
@@ -54,9 +53,9 @@ var redisConnectionString = builder.Configuration["REDIS_CONNECTION_STRING"]
 
 // Fix Railway Redis URL duplicate port issue (e.g., :6379:6379 -> :6379)
 if (!string.IsNullOrEmpty(redisConnectionString) && redisConnectionString.Contains(":6379:6379"))
-    {
-        redisConnectionString = redisConnectionString.Replace(":6379:6379", ":6379");
-        Console.WriteLine($"🔧 Fixed duplicate port in Redis URL");
+{
+    redisConnectionString = redisConnectionString.Replace(":6379:6379", ":6379");
+    Console.WriteLine($"🔧 Fixed duplicate port in Redis URL");
 }
 
 Console.WriteLine($"🔍 Redis Connection String: {(string.IsNullOrEmpty(redisConnectionString) ? "❌ NOT SET" : "✅ SET")}");
@@ -64,76 +63,65 @@ Console.WriteLine($"🔍 Redis Connection String: {(string.IsNullOrEmpty(redisCo
 // Always register memory cache (for rate limiting and fallback)
 builder.Services.AddMemoryCache();
 
+// Register Redis ConnectionMultiplexer as singleton
 if (!string.IsNullOrEmpty(redisConnectionString))
 {
-    try
+    builder.Services.AddSingleton<ConnectionMultiplexer>(provider =>
     {
-        // Railway/Redis connection with enhanced timeout settings
-        builder.Services.AddStackExchangeRedisCache(options =>
+        try
         {
-            options.Configuration = redisConnectionString;
-            options.InstanceName = "MagicLinkDemo";
+            var configuration = ConfigurationOptions.Parse(redisConnectionString);
+            configuration.AbortOnConnectFail = false; // Don't abort on connection failure
+            configuration.ConnectTimeout = 5000; // 5 seconds
+            configuration.SyncTimeout = 5000; // 5 seconds
             
-            // Configure connection string with better timeout settings
-            var configurationOptions = StackExchange.Redis.ConfigurationOptions.Parse(redisConnectionString);
-            configurationOptions.ConnectTimeout = 10000; // 10 seconds
-            configurationOptions.SyncTimeout = 10000;    // 10 seconds  
-            configurationOptions.ConnectRetry = 3;        // Retry 3 times
-            configurationOptions.ReconnectRetryPolicy = new StackExchange.Redis.ExponentialRetry(1000); // Exponential backoff
-            configurationOptions.KeepAlive = 60;          // Keep connection alive
-            configurationOptions.AbortOnConnectFail = false; // Don't abort on connect fail
-            
-            options.ConfigurationOptions = configurationOptions;
-        });
-        Console.WriteLine($"✅ Redis configured with enhanced settings: {redisConnectionString}");
-    }
-    catch (Exception ex)
-    {
-        Console.WriteLine($"⚠️ Redis connection failed: {ex.Message}");
-        Console.WriteLine("🔄 Fallback to in-memory cache");
-    }
+            var multiplexer = ConnectionMultiplexer.Connect(configuration);
+            Console.WriteLine($"✅ Redis ConnectionMultiplexer configured successfully");
+            return multiplexer;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"⚠️ Redis ConnectionMultiplexer failed to initialize: {ex.Message}");
+            // Return a disconnected multiplexer that will cause graceful fallback
+            return ConnectionMultiplexer.Connect("localhost:6379,abortConnect=false");
+        }
+    });
 }
 else
 {
-    Console.WriteLine("⚠️ Using in-memory cache (Redis not configured)");
+    // Register a dummy ConnectionMultiplexer that will fail gracefully
+    builder.Services.AddSingleton<ConnectionMultiplexer>(provider =>
+    {
+        Console.WriteLine("⚠️ Redis not configured, using dummy ConnectionMultiplexer for fallback");
+        return ConnectionMultiplexer.Connect("localhost:6379,abortConnect=false");
+    });
 }
 
-// Configure AWS SES client with credentials and region (with error handling)
+// Configure AWS SES client with credentials and region
 builder.Services.AddScoped<IAmazonSimpleEmailServiceV2>(provider =>
 {
     var configuration = provider.GetRequiredService<IConfiguration>();
     
-    try
+    // Try IConfiguration first (Railway), then Environment variables (local)
+    var awsAccessKey = configuration["AWS_ACCESS_KEY_ID"] ?? Environment.GetEnvironmentVariable("AWS_ACCESS_KEY_ID");
+    var awsSecretKey = configuration["AWS_SECRET_ACCESS_KEY"] ?? Environment.GetEnvironmentVariable("AWS_SECRET_ACCESS_KEY");
+    var awsRegion = configuration["AWS_DEFAULT_REGION"] ?? Environment.GetEnvironmentVariable("AWS_DEFAULT_REGION") ?? "us-east-1";
+    
+    Console.WriteLine($"🔍 Checking AWS credentials...");
+    Console.WriteLine($"AWS_ACCESS_KEY_ID: {(string.IsNullOrEmpty(awsAccessKey) ? "❌ NOT SET" : "✅ SET")}");
+    Console.WriteLine($"AWS_SECRET_ACCESS_KEY: {(string.IsNullOrEmpty(awsSecretKey) ? "❌ NOT SET" : "✅ SET")}");
+    Console.WriteLine($"AWS_DEFAULT_REGION: {awsRegion}");
+    
+    if (string.IsNullOrEmpty(awsAccessKey) || string.IsNullOrEmpty(awsSecretKey))
     {
-        // Try IConfiguration first (Railway), then Environment variables (local)
-        var awsAccessKey = configuration["AWS_ACCESS_KEY_ID"] ?? Environment.GetEnvironmentVariable("AWS_ACCESS_KEY_ID");
-        var awsSecretKey = configuration["AWS_SECRET_ACCESS_KEY"] ?? Environment.GetEnvironmentVariable("AWS_SECRET_ACCESS_KEY");
-        var awsRegion = configuration["AWS_DEFAULT_REGION"] ?? Environment.GetEnvironmentVariable("AWS_DEFAULT_REGION") ?? "us-east-1";
-        
-        Console.WriteLine($"🔍 Checking AWS credentials...");
-        Console.WriteLine($"AWS_ACCESS_KEY_ID: {(string.IsNullOrEmpty(awsAccessKey) ? "❌ NOT SET" : "✅ SET")}");
-        Console.WriteLine($"AWS_SECRET_ACCESS_KEY: {(string.IsNullOrEmpty(awsSecretKey) ? "❌ NOT SET" : "✅ SET")}");
-        Console.WriteLine($"AWS_DEFAULT_REGION: {awsRegion}");
-        
-        if (string.IsNullOrEmpty(awsAccessKey) || string.IsNullOrEmpty(awsSecretKey))
-        {
-            Console.WriteLine("⚠️ AWS credentials not found. Email sending will not work, but app will start.");
-            // Return a mock client or null - this will be handled by EmailSender
-            throw new InvalidOperationException("AWS credentials not configured");
-        }
-        
-        var credentials = new Amazon.Runtime.BasicAWSCredentials(awsAccessKey, awsSecretKey);
-        var region = Amazon.RegionEndpoint.GetBySystemName(awsRegion);
-        
-        Console.WriteLine($"✅ AWS SES client configured for region: {awsRegion}");
-        return new AmazonSimpleEmailServiceV2Client(credentials, region);
+        throw new InvalidOperationException("AWS credentials not found. Please set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables in Railway.");
     }
-    catch (Exception ex)
-    {
-        Console.WriteLine($"⚠️ Failed to configure AWS SES: {ex.Message}");
-        // Return null - EmailSender will handle this gracefully
-        return null!;
-    }
+    
+    var credentials = new Amazon.Runtime.BasicAWSCredentials(awsAccessKey, awsSecretKey);
+    var region = Amazon.RegionEndpoint.GetBySystemName(awsRegion);
+    
+    Console.WriteLine($"✅ AWS SES client configured for region: {awsRegion}");
+    return new AmazonSimpleEmailServiceV2Client(credentials, region);
 });
 
 // Add custom services
@@ -177,25 +165,27 @@ app.UseStaticFiles();
 // Enable authentication and authorization
 app.UseAuthentication();
 app.UseAuthorization();
+
+// Health check endpoint with environment variables status
 app.MapGet("/health", (IConfiguration config) => {
-        var envStatus = new {
-            AWS_ACCESS_KEY_ID = !string.IsNullOrEmpty(config["AWS_ACCESS_KEY_ID"] ?? Environment.GetEnvironmentVariable("AWS_ACCESS_KEY_ID")),
-            AWS_SECRET_ACCESS_KEY = !string.IsNullOrEmpty(config["AWS_SECRET_ACCESS_KEY"] ?? Environment.GetEnvironmentVariable("AWS_SECRET_ACCESS_KEY")),
-            AWS_DEFAULT_REGION = config["AWS_DEFAULT_REGION"] ?? Environment.GetEnvironmentVariable("AWS_DEFAULT_REGION") ?? "us-east-1",
-            SES_FROM_ADDRESS = !string.IsNullOrEmpty(config["SES_FROM_ADDRESS"] ?? Environment.GetEnvironmentVariable("SES_FROM_ADDRESS")),
-            MAGICLINK_SECRET = !string.IsNullOrEmpty(config["MAGICLINK_SECRET"] ?? Environment.GetEnvironmentVariable("MAGICLINK_SECRET")),
-            REDIS_CONFIGURED = !string.IsNullOrEmpty(config["REDIS_CONNECTION_STRING"] ?? config["REDIS_URL"] ?? config["REDIS_PRIVATE_URL"] ??
-                              Environment.GetEnvironmentVariable("REDIS_CONNECTION_STRING") ?? Environment.GetEnvironmentVariable("REDIS_URL") ??
-                              Environment.GetEnvironmentVariable("REDIS_PRIVATE_URL"))
-        };
-        
-        return Results.Ok(new { 
-            status = "healthy", 
-            timestamp = DateTime.UtcNow,
-            environment = app.Environment.EnvironmentName,
-            port = port,
-           environmentVariables = envStatus
-        });
+    var envStatus = new {
+        AWS_ACCESS_KEY_ID = !string.IsNullOrEmpty(config["AWS_ACCESS_KEY_ID"] ?? Environment.GetEnvironmentVariable("AWS_ACCESS_KEY_ID")),
+        AWS_SECRET_ACCESS_KEY = !string.IsNullOrEmpty(config["AWS_SECRET_ACCESS_KEY"] ?? Environment.GetEnvironmentVariable("AWS_SECRET_ACCESS_KEY")),
+        AWS_DEFAULT_REGION = config["AWS_DEFAULT_REGION"] ?? Environment.GetEnvironmentVariable("AWS_DEFAULT_REGION") ?? "us-east-1",
+        SES_FROM_ADDRESS = !string.IsNullOrEmpty(config["SES_FROM_ADDRESS"] ?? Environment.GetEnvironmentVariable("SES_FROM_ADDRESS")),
+        MAGICLINK_SECRET = !string.IsNullOrEmpty(config["MAGICLINK_SECRET"] ?? Environment.GetEnvironmentVariable("MAGICLINK_SECRET")),
+        REDIS_CONFIGURED = !string.IsNullOrEmpty(config["REDIS_CONNECTION_STRING"] ?? config["REDIS_URL"] ?? config["REDIS_PRIVATE_URL"] ??
+                          Environment.GetEnvironmentVariable("REDIS_CONNECTION_STRING") ?? Environment.GetEnvironmentVariable("REDIS_URL") ??
+                          Environment.GetEnvironmentVariable("REDIS_PRIVATE_URL"))
+    };
+    
+    return Results.Ok(new { 
+        status = "healthy", 
+        timestamp = DateTime.UtcNow,
+        environment = app.Environment.EnvironmentName,
+        port = port,
+        environmentVariables = envStatus
+    });
 });
 
 // POST /auth/magic-link endpoint
