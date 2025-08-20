@@ -11,6 +11,7 @@ using Microsoft.Extensions.Caching.Distributed;
 using MagicLinkDemo.Models;
 using MagicLinkDemo.Services;
 using DotNetEnv;
+using StackExchange.Redis;
 
 // Load environment variables from .env file only in development
 // Railway provides environment variables directly, so this is optional
@@ -50,11 +51,36 @@ var redisConnectionString = builder.Configuration["REDIS_CONNECTION_STRING"]
     ?? Environment.GetEnvironmentVariable("REDIS_URL")
     ?? Environment.GetEnvironmentVariable("REDIS_PRIVATE_URL");
 
-// Fix Railway Redis URL duplicate port issue (e.g., :6379:6379 -> :6379)
-if (!string.IsNullOrEmpty(redisConnectionString) && redisConnectionString.Contains(":6379:6379"))
+// Fix Railway Redis URL duplicate port issue and other common issues
+if (!string.IsNullOrEmpty(redisConnectionString))
 {
-    redisConnectionString = redisConnectionString.Replace(":6379:6379", ":6379");
-    Console.WriteLine($"🔧 Fixed duplicate port in Redis URL");
+    // Fix duplicate port issue (e.g., :6379:6379 -> :6379)
+    if (redisConnectionString.Contains(":6379:6379"))
+    {
+        redisConnectionString = redisConnectionString.Replace(":6379:6379", ":6379");
+        Console.WriteLine($"🔧 Fixed duplicate port in Redis URL");
+    }
+    
+    // Fix Railway specific URL format issues
+    if (redisConnectionString.StartsWith("redis://") && redisConnectionString.Contains("@") && !redisConnectionString.Contains(","))
+    {
+        try
+        {
+            var uri = new Uri(redisConnectionString);
+            if (uri.Port != 6379 && redisConnectionString.EndsWith(":6379"))
+            {
+                // Sometimes Railway provides malformed URLs, let's reconstruct
+                var userInfo = uri.UserInfo;
+                var host = uri.Host;
+                redisConnectionString = $"redis://{userInfo}@{host}:6379";
+                Console.WriteLine($"🔧 Reconstructed Redis URL for Railway compatibility");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"⚠️ Could not parse Redis URL, using as-is: {ex.Message}");
+        }
+    }
 }
 
 Console.WriteLine($"🔍 Redis Connection String: {(string.IsNullOrEmpty(redisConnectionString) ? "❌ NOT SET" : "✅ SET")}");
@@ -66,13 +92,24 @@ if (!string.IsNullOrEmpty(redisConnectionString))
 {
     try
     {
-        // Railway/Redis connection with timeout settings
+        // Railway/Redis connection with enhanced timeout settings
         builder.Services.AddStackExchangeRedisCache(options =>
         {
             options.Configuration = redisConnectionString;
             options.InstanceName = "MagicLinkDemo";
+            
+            // Configure connection string with better timeout settings
+            var configurationOptions = StackExchange.Redis.ConfigurationOptions.Parse(redisConnectionString);
+            configurationOptions.ConnectTimeout = 10000; // 10 seconds
+            configurationOptions.SyncTimeout = 10000;    // 10 seconds  
+            configurationOptions.ConnectRetry = 3;        // Retry 3 times
+            configurationOptions.ReconnectRetryPolicy = new StackExchange.Redis.ExponentialRetry(1000); // Exponential backoff
+            configurationOptions.KeepAlive = 60;          // Keep connection alive
+            configurationOptions.AbortOnConnectFail = false; // Don't abort on connect fail
+            
+            options.ConfigurationOptions = configurationOptions;
         });
-        Console.WriteLine($"✅ Redis configured successfully with URL: {redisConnectionString}");
+        Console.WriteLine($"✅ Redis configured with enhanced settings: {redisConnectionString}");
     }
     catch (Exception ex)
     {
@@ -154,8 +191,8 @@ app.UseStaticFiles();
 app.UseAuthentication();
 app.UseAuthorization();
 
-// Health check endpoint with environment variables status
-app.MapGet("/health", (IConfiguration config) => {
+// Health check endpoint with environment variables and Redis status
+app.MapGet("/health", async (IConfiguration config, IServiceProvider serviceProvider) => {
     var envStatus = new {
         AWS_ACCESS_KEY_ID = !string.IsNullOrEmpty(config["AWS_ACCESS_KEY_ID"] ?? Environment.GetEnvironmentVariable("AWS_ACCESS_KEY_ID")),
         AWS_SECRET_ACCESS_KEY = !string.IsNullOrEmpty(config["AWS_SECRET_ACCESS_KEY"] ?? Environment.GetEnvironmentVariable("AWS_SECRET_ACCESS_KEY")),
@@ -167,11 +204,34 @@ app.MapGet("/health", (IConfiguration config) => {
                           Environment.GetEnvironmentVariable("REDIS_PRIVATE_URL"))
     };
     
+    // Test Redis connection
+    var redisStatus = "not_configured";
+    var distributedCache = serviceProvider.GetService<IDistributedCache>();
+    if (distributedCache != null)
+    {
+        try
+        {
+            // Try a simple Redis operation
+            await distributedCache.SetStringAsync("health-check", "ok", new DistributedCacheEntryOptions
+            {
+                AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(30)
+            });
+            var testValue = await distributedCache.GetStringAsync("health-check");
+            await distributedCache.RemoveAsync("health-check");
+            redisStatus = testValue == "ok" ? "connected" : "connection_failed";
+        }
+        catch (Exception ex)
+        {
+            redisStatus = $"failed: {ex.Message}";
+        }
+    }
+    
     return Results.Ok(new { 
         status = "healthy", 
         timestamp = DateTime.UtcNow,
         environment = app.Environment.EnvironmentName,
         port = port,
+        redisStatus = redisStatus,
         environmentVariables = envStatus
     });
 });
