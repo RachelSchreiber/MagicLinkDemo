@@ -68,8 +68,8 @@ if (!string.IsNullOrEmpty(redisConnectionString))
     {
         try
         {
-            Console.WriteLine($"🔍 Redis URL format: {redisConnectionString.Substring(0, Math.Min(20, redisConnectionString.Length))}...");
-            
+            Console.WriteLine($"🔍 Redis URL format: {redisConnectionString}");
+
             var configuration = ConfigurationOptions.Parse(redisConnectionString);
             configuration.AbortOnConnectFail = false; // Don't abort on connection failure
             configuration.ConnectTimeout = 5000; // 5 seconds
