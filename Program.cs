@@ -74,7 +74,7 @@ if (!string.IsNullOrEmpty(redisConnectionString))
             configuration.AbortOnConnectFail = false; // Don't abort on connection failure
             configuration.ConnectTimeout = 5000; // 5 seconds
             configuration.SyncTimeout = 5000; // 5 seconds
-            
+            configuration.Ssl = true; // Enable SSL
             var multiplexer = ConnectionMultiplexer.Connect(configuration);
             Console.WriteLine($"✅ Redis ConnectionMultiplexer configured successfully");
             
