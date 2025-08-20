@@ -51,10 +51,20 @@ var redisConnectionString = builder.Configuration["REDIS_CONNECTION_STRING"]
     ?? Environment.GetEnvironmentVariable("REDIS_URL")
     ?? Environment.GetEnvironmentVariable("REDIS_PRIVATE_URL");
 
-if (!string.IsNullOrEmpty(redisConnectionString) && redisConnectionString.Contains(":6379:6379"))
+// Fix Railway Redis URL formatting issues
+if (!string.IsNullOrEmpty(redisConnectionString))
 {
-    redisConnectionString = redisConnectionString.Replace(":6379:6379", ":6379");
-    Console.WriteLine($"🔧 Fixed duplicate port in Redis URL");
+    // Fix duplicate ports like :6379:6380 or :6379:6379
+    if (redisConnectionString.Contains(":6379:"))
+    {
+        var parts = redisConnectionString.Split(':');
+        if (parts.Length >= 4 && parts[parts.Length - 2] == "6379")
+        {
+            // Remove the duplicate port
+            redisConnectionString = string.Join(":", parts.Take(parts.Length - 1));
+            Console.WriteLine($"🔧 Fixed duplicate port in Redis URL");
+        }
+    }
 }
 
 Console.WriteLine($"🔍 Redis Connection String: {(string.IsNullOrEmpty(redisConnectionString) ? "❌ NOT SET" : "✅ SET")}");
@@ -68,39 +78,59 @@ if (!string.IsNullOrEmpty(redisConnectionString))
     {
         try
         {
-            Console.WriteLine($"🔍 Redis URL format: {redisConnectionString}");
+            Console.WriteLine($"🔍 Redis URL format: {redisConnectionString.Substring(0, Math.Min(50, redisConnectionString.Length))}...");
 
             var configuration = ConfigurationOptions.Parse(redisConnectionString);
+            
+            // Railway specific configurations for better connection handling
             configuration.AbortOnConnectFail = false; // Don't abort on connection failure
-            configuration.ConnectTimeout = 5000; // 5 seconds
-            configuration.SyncTimeout = 5000; // 5 seconds
-            configuration.Ssl = true; // Enable SSL
+            configuration.ConnectTimeout = 15000; // 15 seconds - Railway can be slow
+            configuration.SyncTimeout = 10000; // 10 seconds
+            configuration.AsyncTimeout = 10000; // 10 seconds
+            configuration.ConnectRetry = 3; // Retry 3 times
+            configuration.KeepAlive = 60; // Keep connection alive
+            configuration.ReconnectRetryPolicy = new ExponentialRetry(1000); // Exponential backoff
+            
+            // For Railway internal networking - SSL is typically disabled for internal connections
+            configuration.Ssl = false; // Railway internal connections usually don't need SSL
+            configuration.AllowAdmin = false; // Security best practice
+            
             var multiplexer = ConnectionMultiplexer.Connect(configuration);
             Console.WriteLine($"✅ Redis ConnectionMultiplexer configured successfully");
             
-            // Test the connection immediately
-            var db = multiplexer.GetDatabase();
-            db.Ping();
-            Console.WriteLine($"✅ Redis ping test successful");
+            // Test the connection with proper async handling
+            Task.Run(async () =>
+            {
+                try
+                {
+                    var db = multiplexer.GetDatabase();
+                    var pingResult = await db.PingAsync();
+                    Console.WriteLine($"✅ Redis ping test successful: {pingResult.TotalMilliseconds}ms");
+                }
+                catch (Exception pingEx)
+                {
+                    Console.WriteLine($"⚠️ Redis ping failed: {pingEx.Message}");
+                }
+            });
             
             return multiplexer;
         }
         catch (Exception ex)
         {
             Console.WriteLine($"⚠️ Redis ConnectionMultiplexer failed to initialize: {ex.Message}");
-            // Return a disconnected multiplexer that will cause graceful fallback
-            return ConnectionMultiplexer.Connect("localhost:6379,abortConnect=false");
+            // Return null to indicate Redis is not available
+            return null;
         }
     });
 }
 
 else
 {
-    // Register a dummy ConnectionMultiplexer that will fail gracefully
+    // Register a null ConnectionMultiplexer to indicate Redis is not available
     builder.Services.AddSingleton<IConnectionMultiplexer>(provider =>
     {
-        Console.WriteLine("⚠️ Redis not configured, using dummy ConnectionMultiplexer for fallback");
-        return ConnectionMultiplexer.Connect("localhost:6379,abortConnect=false");
+        Console.WriteLine("⚠️ Redis not configured, using memory cache only");
+        return null;
     });
 }
 

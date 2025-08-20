@@ -5,37 +5,39 @@ namespace MagicLinkDemo.Services;
 
 public class TokenService
 {
-    private readonly IConnectionMultiplexer _redis;
+    private readonly IConnectionMultiplexer? _redis;
     private readonly IMemoryCache _memoryCache;
 
-    public TokenService(IConnectionMultiplexer redis, IMemoryCache memoryCache)
+    public TokenService(IConnectionMultiplexer? redis, IMemoryCache memoryCache)
     {
         _redis = redis;
         _memoryCache = memoryCache;
     }
 
     private bool TryGetRedis(out IDatabase? db)
-{
-    if (_redis != null && _redis.IsConnected)
     {
-        try
+        if (_redis != null && _redis.IsConnected)
         {
-            db = _redis.GetDatabase();
-            // Test the connection with a simple ping
-            db.Ping();
-            return true;
+            try
+            {
+                db = _redis.GetDatabase();
+                // Test the connection with a simple ping
+                var pingResult = db.Ping();
+                Console.WriteLine($"🔍 Redis ping: {pingResult.TotalMilliseconds}ms");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"⚠️ Redis connection test failed: {ex.Message}");
+                db = null;
+                return false;
+            }
         }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"⚠️ Redis connection test failed: {ex.Message}");
-            db = null;
-            return false;
-        }
-    }
 
-    db = null;
-    return false;
-}
+        Console.WriteLine($"⚠️ Redis is null or disconnected");
+        db = null;
+        return false;
+    }
 
 
 public async Task<string> GenerateSimpleTokenAsync(string email)
