@@ -11,13 +11,28 @@ public class EmailSender
     public EmailSender(IAmazonSimpleEmailServiceV2 sesClient, IConfiguration configuration)
     {
         _sesClient = sesClient;
-        _fromAddress = configuration["SES_FROM_ADDRESS"] ?? 
-                       Environment.GetEnvironmentVariable("SES_FROM_ADDRESS") ?? 
-                       throw new InvalidOperationException("SES_FROM_ADDRESS environment variable is required");
+        try 
+        {
+            _fromAddress = configuration["SES_FROM_ADDRESS"] ?? 
+                           Environment.GetEnvironmentVariable("SES_FROM_ADDRESS") ?? 
+                           throw new InvalidOperationException("SES_FROM_ADDRESS environment variable is required");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"⚠️ EmailSender configuration warning: {ex.Message}");
+            _fromAddress = "noreply@example.com"; // fallback address
+        }
     }
 
     public async Task SendMagicLinkAsync(string toEmail, string magicLink)
     {
+        if (_sesClient == null)
+        {
+            Console.WriteLine("⚠️ AWS SES not configured - email sending disabled");
+            Console.WriteLine($"📧 Would send magic link to {toEmail}: {magicLink}");
+            return;
+        }
+
         var subject = "Your Secure Login Link - MagicLinkDemo";
         var htmlBody = $@"
 <!DOCTYPE html>

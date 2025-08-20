@@ -34,8 +34,9 @@ else
 
 // For Railway deployment - use PORT environment variable if available, otherwise default to 8080
 var port = Environment.GetEnvironmentVariable("PORT") ?? "8080";
-Environment.SetEnvironmentVariable("ASPNETCORE_URLS", $"http://+:{port}");
-Console.WriteLine($"🚀 Application will listen on port {port}");
+var urls = $"http://0.0.0.0:{port}";
+Environment.SetEnvironmentVariable("ASPNETCORE_URLS", urls);
+Console.WriteLine($"🚀 Application will listen on {urls}");
 
 var builder = WebApplication.CreateBuilder(args);
 
