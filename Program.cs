@@ -51,7 +51,6 @@ var redisConnectionString = builder.Configuration["REDIS_CONNECTION_STRING"]
     ?? Environment.GetEnvironmentVariable("REDIS_URL")
     ?? Environment.GetEnvironmentVariable("REDIS_PRIVATE_URL");
 
-// Fix Railway Redis URL duplicate port issue (e.g., :6379:6379 -> :6379)
 if (!string.IsNullOrEmpty(redisConnectionString) && redisConnectionString.Contains(":6379:6379"))
 {
     redisConnectionString = redisConnectionString.Replace(":6379:6379", ":6379");
@@ -66,7 +65,7 @@ builder.Services.AddMemoryCache();
 // Register Redis ConnectionMultiplexer as singleton
 if (!string.IsNullOrEmpty(redisConnectionString))
 {
-    builder.Services.AddSingleton<ConnectionMultiplexer>(provider =>
+    builder.Services.AddSingleton<IConnectionMultiplexer>(provider =>
     {
         try
         {
@@ -90,7 +89,7 @@ if (!string.IsNullOrEmpty(redisConnectionString))
 else
 {
     // Register a dummy ConnectionMultiplexer that will fail gracefully
-    builder.Services.AddSingleton<ConnectionMultiplexer>(provider =>
+    builder.Services.AddSingleton<IConnectionMultiplexer>(provider =>
     {
         Console.WriteLine("⚠️ Redis not configured, using dummy ConnectionMultiplexer for fallback");
         return ConnectionMultiplexer.Connect("localhost:6379,abortConnect=false");
@@ -221,7 +220,7 @@ app.MapPost("/auth/magic-link", async ([FromBody] MagicLinkRequest request,
     try
     {
         // Generate simple token
-        var token = tokenService.GenerateSimpleToken(request.Email);
+        var token = await tokenService.GenerateSimpleTokenAsync(request.Email);
 
         // Create magic link
         var baseUrl = $"{context.Request.Scheme}://{context.Request.Host}";
@@ -260,7 +259,7 @@ app.MapGet("/auth/callback", async ([FromQuery] string? token,
     try
     {
         // Validate simple token and get email
-        var email = tokenService.ValidateToken(token);
+        var email = await tokenService.ValidateTokenAsync(token);
         if (string.IsNullOrEmpty(email))
         {
             logger.LogWarning("Invalid token used in callback");
