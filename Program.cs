@@ -62,13 +62,14 @@ Console.WriteLine($"🔍 Redis Connection String: {(string.IsNullOrEmpty(redisCo
 // Always register memory cache (for rate limiting and fallback)
 builder.Services.AddMemoryCache();
 
-// Register Redis ConnectionMultiplexer as singleton
 if (!string.IsNullOrEmpty(redisConnectionString))
 {
     builder.Services.AddSingleton<IConnectionMultiplexer>(provider =>
     {
         try
         {
+            Console.WriteLine($"🔍 Redis URL format: {redisConnectionString.Substring(0, Math.Min(20, redisConnectionString.Length))}...");
+            
             var configuration = ConfigurationOptions.Parse(redisConnectionString);
             configuration.AbortOnConnectFail = false; // Don't abort on connection failure
             configuration.ConnectTimeout = 5000; // 5 seconds
@@ -76,6 +77,12 @@ if (!string.IsNullOrEmpty(redisConnectionString))
             
             var multiplexer = ConnectionMultiplexer.Connect(configuration);
             Console.WriteLine($"✅ Redis ConnectionMultiplexer configured successfully");
+            
+            // Test the connection immediately
+            var db = multiplexer.GetDatabase();
+            db.Ping();
+            Console.WriteLine($"✅ Redis ping test successful");
+            
             return multiplexer;
         }
         catch (Exception ex)
@@ -86,6 +93,7 @@ if (!string.IsNullOrEmpty(redisConnectionString))
         }
     });
 }
+
 else
 {
     // Register a dummy ConnectionMultiplexer that will fail gracefully

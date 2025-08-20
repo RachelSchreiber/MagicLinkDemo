@@ -15,40 +15,58 @@ public class TokenService
     }
 
     private bool TryGetRedis(out IDatabase? db)
+{
+    if (_redis != null && _redis.IsConnected)
     {
-        if (_redis != null && _redis.IsConnected)
+        try
         {
             db = _redis.GetDatabase();
+            // Test the connection with a simple ping
+            db.Ping();
             return true;
         }
-
-        db = null;
-        return false;
-    }
-
-    public async Task<string> GenerateSimpleTokenAsync(string email)
-    {
-        var token = Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N");
-        var key = $"token:{token}";
-
-        if (TryGetRedis(out var db) && db != null)
+        catch (Exception ex)
         {
-            try
-            {
-                await db.StringSetAsync(key, email, TimeSpan.FromMinutes(15));
-                Console.WriteLine($"✅ Token stored in Redis: {key}");
-                return token;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"⚠️ Redis failed, fallback to memory: {ex.Message}");
-            }
+            Console.WriteLine($"⚠️ Redis connection test failed: {ex.Message}");
+            db = null;
+            return false;
         }
-
-        _memoryCache.Set(key, email, TimeSpan.FromMinutes(15));
-        Console.WriteLine($"💾 Token stored in memory: {key}");
-        return token;
     }
+
+    db = null;
+    return false;
+}
+
+
+public async Task<string> GenerateSimpleTokenAsync(string email)
+{
+    var token = Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N");
+    var key = $"token:{token}";
+
+    Console.WriteLine($"🔍 Attempting to use Redis for token storage...");
+    
+    if (TryGetRedis(out var db) && db != null)
+    {
+        try
+        {
+            await db.StringSetAsync(key, email, TimeSpan.FromMinutes(15));
+            Console.WriteLine($"✅ Token stored in Redis: {key}");
+            return token;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"⚠️ Redis failed, fallback to memory: {ex.Message}");
+        }
+    }
+    else
+    {
+        Console.WriteLine($"⚠️ Redis not available, using memory cache");
+    }
+
+    _memoryCache.Set(key, email, TimeSpan.FromMinutes(15));
+    Console.WriteLine($"💾 Token stored in memory: {key}");
+    return token;
+}
 
     public async Task<string?> ValidateTokenAsync(string token)
     {
