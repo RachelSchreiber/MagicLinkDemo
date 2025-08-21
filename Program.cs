@@ -13,20 +13,17 @@ using MagicLinkDemo.Services;
 using DotNetEnv;
 using StackExchange.Redis;
 
-var builder = WebApplication.CreateBuilder(args);
-
 // Load environment variables from .env file in development
 if (File.Exists(".env"))
 {
     Env.Load();
 }
 
-// Add environment variables to configuration
-builder.Configuration.AddEnvironmentVariables();
-
 // Configure port for Railway deployment
-var port = builder.Configuration["PORT"] ?? "8080";
+var port = Environment.GetEnvironmentVariable("PORT") ?? "8080";
 Environment.SetEnvironmentVariable("ASPNETCORE_URLS", $"http://+:{port}");
+
+var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container
 builder.Services.AddEndpointsApiExplorer();
@@ -35,7 +32,10 @@ builder.Services.AddSwaggerGen();
 // Configure Redis connection
 var redisConnectionString = builder.Configuration["REDIS_CONNECTION_STRING"] 
     ?? builder.Configuration["REDIS_URL"]
-    ?? builder.Configuration["REDIS_PRIVATE_URL"];
+    ?? builder.Configuration["REDIS_PRIVATE_URL"]
+    ?? Environment.GetEnvironmentVariable("REDIS_CONNECTION_STRING") 
+    ?? Environment.GetEnvironmentVariable("REDIS_URL")
+    ?? Environment.GetEnvironmentVariable("REDIS_PRIVATE_URL");
 
 // Fix duplicate ports in Redis URL if present
 if (!string.IsNullOrEmpty(redisConnectionString))
@@ -72,13 +72,13 @@ if (!string.IsNullOrEmpty(redisConnectionString))
         }
         catch
         {
-            return null!; // Explicit null return
+            return null;
         }
     });
 }
 else
 {
-    builder.Services.AddSingleton<IConnectionMultiplexer>(provider => null!); // Explicit null return
+    builder.Services.AddSingleton<IConnectionMultiplexer>(provider => null);
 }
 
 // Configure AWS SES client
@@ -86,9 +86,9 @@ builder.Services.AddScoped<IAmazonSimpleEmailServiceV2>(provider =>
 {
     var configuration = provider.GetRequiredService<IConfiguration>();
     
-    var awsAccessKey = configuration["AWS_ACCESS_KEY_ID"];
-    var awsSecretKey = configuration["AWS_SECRET_ACCESS_KEY"];
-    var awsRegion = configuration["AWS_DEFAULT_REGION"] ?? "us-east-1";
+    var awsAccessKey = configuration["AWS_ACCESS_KEY_ID"] ?? Environment.GetEnvironmentVariable("AWS_ACCESS_KEY_ID");
+    var awsSecretKey = configuration["AWS_SECRET_ACCESS_KEY"] ?? Environment.GetEnvironmentVariable("AWS_SECRET_ACCESS_KEY");
+    var awsRegion = configuration["AWS_DEFAULT_REGION"] ?? Environment.GetEnvironmentVariable("AWS_DEFAULT_REGION") ?? "us-east-1";
     
     if (string.IsNullOrEmpty(awsAccessKey) || string.IsNullOrEmpty(awsSecretKey))
     {
